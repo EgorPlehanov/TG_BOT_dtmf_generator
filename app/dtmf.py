@@ -131,13 +131,8 @@ class DTMF:
         
 
     def recognize_dtmf(self, audio_data, file_format=None):
-        print('recognize_dtmf')
-        print('file_format', file_format)
-
         audio = AudioSegment.from_file(BytesIO(audio_data), format=file_format)
-
         samples = np.array(audio.get_array_of_samples())
-        print(len(samples))
 
         keys, found_freqs = self.decode_dtmf(samples)
         images = plot_dtmf_analysis(samples, found_freqs, self.frequency)
