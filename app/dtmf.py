@@ -3,16 +3,15 @@ import sounddevice as sd
 from scipy.io import wavfile
 from pydub import AudioSegment
 from io import BytesIO
-import wave
 
 from dtmf_plotter import plot_dtmf_analysis
 
 
 class DTMF:
-    def __init__(self, duration=0.1, silence_duration=0.1, frequency=8000, A=0.5):
+    def __init__(self, duration=0.1, silence_duration=0.1, sampling_rate=8000, A=0.5):
         self.duration = duration
         self.silence_duration = silence_duration
-        self.frequency = frequency
+        self.sampling_rate = sampling_rate
         self.A = A
         self.dtmf_frequencies = {
             '1': (697, 1209),
@@ -36,9 +35,45 @@ class DTMF:
             'D': (941, 1633)
         }
 
+    
+    def get_parameters(self):
+        return {
+            'duration': {
+                'name': '⌛ Длительность сигнала',
+                'unit': 'секунд',
+                'value': self.duration,
+                'validator': lambda x: isinstance(x, (int, float)) and x >= 0,
+                'converter': lambda x: float(x)
+            },
+            'silence_duration': {
+                'name': '⌚ Интервал между сигналами',
+                'unit': 'секунд',
+                'value': self.silence_duration,
+                'validator': lambda x: isinstance(x, (int, float)) and x >= 0,
+                'converter': lambda x: float(x)
+            },
+            'sampling_rate': {
+                'name': ' 🎶 Частота дискретизации',
+                'unit': 'Гц',
+                'value': self.sampling_rate,
+                'validator': lambda x: isinstance(x, (int, float)) and x > 0,
+                'converter': lambda x: int(x)
+            },
+            'A': {
+                'name': ' 🔊 Амплитуда сигнала',
+                'value': self.A,
+                'validator': lambda x: isinstance(x, (int, float)) and x >= 0,
+                'converter': lambda x: float(x)
+            }
+        }
+    
+
+    def set_parameter(self, parameter_name, parameter_value):
+        setattr(self, parameter_name, parameter_value)
+
 
     def generate_dtmf_tone(self, phone_number):
-        t = np.linspace(0, self.duration, int(self.frequency * self.duration), endpoint=False)
+        t = np.linspace(0, self.duration, int(self.sampling_rate * self.duration), endpoint=False)
 
         dtmf_signal = []
         for digit in phone_number:
@@ -48,10 +83,10 @@ class DTMF:
             signal_2 = self.A * np.sin(2 * np.pi * f2 * t)
             dtmf_signal.extend(signal_1 + signal_2)
 
-            silence = np.zeros(int(self.silence_duration * self.frequency))
+            silence = np.zeros(int(self.silence_duration * self.sampling_rate))
             dtmf_signal.extend(silence)
 
-        dtmf_signal = np.int16(dtmf_signal / np.max(np.abs(dtmf_signal)) * 32767)
+        dtmf_signal = np.int16(dtmf_signal / np.max(np.abs(dtmf_signal)) * 32767) # Normalize the signal to [-32767, 32767] and convert it to 16-bit integer
 
         return dtmf_signal
     
@@ -64,12 +99,12 @@ class DTMF:
         found_freqs = []
 
         # Iterate through the signal in window-sized chunks
-        for i in range(0, len(signal), int(self.frequency * window)):
+        for i in range(0, len(signal), int(self.sampling_rate * window)):
             # Get the current chunk of the signal
-            cut_sig = signal[i:i+int(self.frequency * window)]
+            cut_sig = signal[i:i+int(self.sampling_rate * window)]
 
             # Take the Fast Fourier Transform (FFT) of the current chunk
-            fft_sig = np.fft.fft(cut_sig, self.frequency)
+            fft_sig = np.fft.fft(cut_sig, self.sampling_rate)
 
             # Take the absolute value of the FFT
             fft_sig = np.abs(fft_sig)
@@ -107,13 +142,13 @@ class DTMF:
 
     def play_dtmf_tone(self, number):
         signal = self.generate_dtmf_tone(number)
-        sd.play(signal, self.frequency)
+        sd.play(signal, self.sampling_rate)
         sd.wait()
 
 
     def save_dtmf_to_wav(self, number, filename):
         signal = self.generate_dtmf_tone(number)
-        wavfile.write(filename, self.frequency, signal)
+        wavfile.write(filename, self.sampling_rate, signal)
 
 
     def get_dtmf_signal_file(self, number, format="wav"):
@@ -122,7 +157,7 @@ class DTMF:
         if format == "wav":
             return signal, "wav"
         elif format == "mp3":
-            audio = AudioSegment(signal.tobytes(), frame_rate=self.frequency, sample_width=2, channels=1)
+            audio = AudioSegment(signal.tobytes(), frame_rate=self.sampling_rate, sample_width=2, channels=1)
             output = BytesIO()
             audio.export(output, format="mp3")
             return output.getvalue(), "mp3"
@@ -135,7 +170,7 @@ class DTMF:
         samples = np.array(audio.get_array_of_samples())
 
         keys, found_freqs = self.decode_dtmf(samples)
-        images = plot_dtmf_analysis(samples, found_freqs, self.frequency)
+        images = plot_dtmf_analysis(samples, found_freqs, self.sampling_rate)
         return ''.join(keys), images
         
 

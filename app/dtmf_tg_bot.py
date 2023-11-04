@@ -1,4 +1,5 @@
 import telebot
+from telebot.util import quick_markup
 from decouple import config
 import re
 
@@ -9,6 +10,13 @@ API_TOKEN = config('BOT_TOKEN')
 bot = telebot.TeleBot(API_TOKEN)
 dtmf = DTMF()
 
+# Определение режима работы бота
+# "processing" - режим обработки DTMF сигнала (включая и генерацию, и декодирование)
+# "settings" - режим настроек параметров
+# f"settings_{parameter_name}" - режим настроеки выбранного праметра
+bot_mode = "processing"  # Начальный режим
+
+
 
 @bot.message_handler(commands=['help', 'start'])
 def send_welcome(message):
@@ -17,7 +25,8 @@ def send_welcome(message):
         'Я - бот для генерации и распознавания DTMF сигнала. 🤖\n\n'
         '📞 Для генерации DTMF сигнала отправьте мне номер телефона. Допустимые символы: 0-9, *, # и A-D.\n\n'
         '🎙️ Для распознавания DTMF сигнала отправьте мне голосовое сообщение.\n\n'
-        '📚 Отправьте /info, чтобы узнать больше о DTMF и как его использовать.'
+        '📚 Отправьте /info, чтобы узнать больше о DTMF и как его использовать.\n\n'
+        '⚙️ Задать кастомные параметры генератора /settings.'
     ))
 
 
@@ -39,7 +48,109 @@ def send_info(message):
         )
 
 
-@bot.message_handler(content_types=['text'])
+
+@bot.message_handler(commands=['settings'])
+def send_settings(message):
+    global bot_mode; bot_mode = "settings"
+    bot.send_message(
+        message.chat.id,
+        '‼️ Бот в режиме настроек параметров генератора DTMF ⚙️'
+    )
+
+    dtmf_parameters = dtmf.get_parameters()
+    markup_inline = telebot.util.quick_markup({
+        **{
+            parameter_data.get('name', 'Название отсутствует'): {'callback_data': parameter_name}
+            for parameter_name, parameter_data in dtmf_parameters.items()
+        },
+        'Выйти из настроек': {'callback_data': 'cancel'}
+    })
+    bot.send_message(
+        message.chat.id,
+        (
+            '🔧 Настройки параметров генератора: \n\n' +
+            '\n'.join([
+                f"{parameter_data.get('name', 'Название отсутствует')}: {parameter_data.get('value')} {parameter_data.get('unit', '')}"
+                for parameter_name, parameter_data in dtmf_parameters.items()
+            ]) +
+            '\n\n⬇️Нажми на нужный параметр для изменения⬇️'
+        ),
+        reply_markup=markup_inline
+    )
+
+
+
+@bot.callback_query_handler(func=lambda call: "settings" in bot_mode)
+def callback_query_settings(call):
+    global bot_mode
+
+    if call.data == 'cancel':
+        bot_mode = "processing"
+        bot.send_message(
+            call.message.chat.id,
+            '‼️ Бот в режиме генерации и распознавания DTMF сигнала 🎛️',
+        )
+        return
+    if call.data == 'cancel_set_parameter':
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+        bot_mode = "settings"
+        return
+
+    dtmf_parameters = dtmf.get_parameters()
+    bot.send_message(
+        call.message.chat.id,
+        f"Отправьте значение для параметра:\n{dtmf_parameters.get(call.data).get('name')}",
+        reply_markup=telebot.util.quick_markup({
+            'Отмена': {'callback_data': 'cancel_set_parameter'}
+        })
+    )
+    bot_mode = f"settings|{call.data}"
+
+
+
+@bot.message_handler(
+    content_types=['text'],
+    func=lambda _: 'settings|' in bot_mode
+)
+def handle_parameter_text(message):
+    global bot_mode
+    parameter_name = bot_mode.split('|')[1]
+    
+    dtmf_parameters = dtmf.get_parameters()
+    parameter_data = dtmf_parameters.get(parameter_name)
+    parameter_converter = parameter_data.get('converter')
+    parameter_validator = parameter_data.get('validator')
+    parameter_print_name = parameter_data.get('name') or parameter_name
+
+    try:
+        parameter_value = parameter_converter(message.text)
+        if not parameter_validator(parameter_value):
+            raise ValueError("Недопустимое значение")
+        
+        dtmf.set_parameter(parameter_name, parameter_value)
+        bot.send_message(
+            message.chat.id,
+            f"Параметр {parameter_print_name} успешно установлен в {parameter_value}"
+        )
+    except ValueError as e:
+        bot.send_message(
+            message.chat.id,
+            f"Ошибка: {e}\nНеправильное значение для параметра {parameter_print_name}. Попробуйте ещё раз."
+        )
+    except Exception:
+        bot.send_message(
+            message.chat.id,
+            f"Произошла ошибка при установке параметра {parameter_print_name}. Попробуйте ещё раз."
+        )
+    
+    send_settings(message)
+    
+
+
+@bot.message_handler(
+    content_types=['text'],
+    func=lambda _: bot_mode=='processing'
+)
 def handle_number_text(message):
     phone_number = message.text.strip().upper()
 
@@ -58,7 +169,11 @@ def handle_number_text(message):
     )
 
 
-@bot.message_handler(content_types=['audio', 'voice', 'document'])
+
+@bot.message_handler(
+    content_types=['audio', 'voice', 'document'],
+    func=lambda _: bot_mode=='processing'
+)
 def voice_processing(message):
     answer_message = bot.reply_to(message, f"Нужно подумать...")
 
@@ -77,10 +192,14 @@ def voice_processing(message):
             bot.delete_message(answer_message.chat.id, answer_message.message_id)
             bot.reply_to(message, f"Неподдерживаемый тип файла.")
             return
-
+        
+    print(f"Файл: {file_info.file_path}")
     downloaded_file = bot.download_file(file_info.file_path)
-
-    phone_number, images = dtmf.recognize_dtmf(downloaded_file, file_format)
+    try:
+        phone_number, images = dtmf.recognize_dtmf(downloaded_file, file_format)
+    except Exception:
+        bot.edit_message_text("Ошибка при распознавании.", answer_message.chat.id, answer_message.message_id)
+        return
 
     if phone_number:
         bot.edit_message_text(
@@ -89,17 +208,24 @@ def voice_processing(message):
             answer_message.message_id,
             disable_web_page_preview = True
         )
-        bot.send_media_group(
-            answer_message.chat.id,
-            [telebot.types.InputMediaPhoto(img) for img in images]
-        )
     else:
         bot.edit_message_text("Не удалось распознать номер.", answer_message.chat.id, answer_message.message_id)
+        
+    bot.send_media_group(
+        answer_message.chat.id,
+        [telebot.types.InputMediaPhoto(img) for img in images]
+    )
+
 
 
 @bot.message_handler(func=lambda message: True)
 def echo_message(message):
-    bot.reply_to(message, 'Я тебя не понимаю. Напиши /help.')
+    global bot_mode
+    if 'settings' in bot_mode:
+        bot.reply_to(message, 'Нажми на кнопку параметра чтобы его выбрать')
+    else:
+        bot.reply_to(message, 'Я тебя не понимаю. Напиши /help.')
+
 
 
 bot.infinity_polling()
