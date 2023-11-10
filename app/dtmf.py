@@ -3,40 +3,49 @@ import sounddevice as sd
 from scipy.io import wavfile
 from pydub import AudioSegment
 from io import BytesIO
+import os
+from typing import Optional
 
-from dtmf_plotter import plot_dtmf_analysis
+from plotter import plot_dtmf_analysis_results
 
 
 class DTMF:
-    def __init__(self, duration=0.1, silence_duration=0.1, sampling_rate=8000, A=0.5):
+    def __init__(
+        self,
+        duration = 0.1,                 # Длительность сигнала
+        silence_duration = 0.05,        # Длительность паузы между сигналами
+        sampling_rate = 16000,          # Частота дискретизации
+        A = 0.5,                        # Амплитуда сигнала
+        decode_fragments_duration = 150 # Длительность фрагментов для распознавания
+    ):
         self.duration = duration
         self.silence_duration = silence_duration
-        self.sampling_rate = sampling_rate
+        self.sample_rate = sampling_rate
         self.A = A
-        self.dtmf_frequencies = {
-            '1': (697, 1209),
-            '2': (697, 1336),
-            '3': (697, 1477),
-            'A': (697, 1633),
-
-            '4': (770, 1209),
-            '5': (770, 1336),
-            '6': (770, 1477),
-            'B': (770, 1633),
-
-            '7': (852, 1209),
-            '8': (852, 1336),
-            '9': (852, 1477),
-            'C': (852, 1633),
-
-            '*': (941, 1209),
-            '0': (941, 1336),
-            '#': (941, 1477),
-            'D': (941, 1633)
+        self.decode_fragments_duration = decode_fragments_duration
+        
+        self.symbols = ['1', '2', '3', 'A', '4', '5', '6', 'B', '7', '8', '9', 'C', '*', '0', '#', 'D']
+        self.frequencies = [697, 770, 852, 941, 1209, 1336, 1477, 1633]
+        self.low_frequencies = self.frequencies[:4]
+        self.high_frequencies = self.frequencies[4:]
+        
+        self.symbols_to_frequencies = {
+            symbol: (self.low_frequencies[index // 4], self.high_frequencies[index % 4])
+            for index, symbol in enumerate(self.symbols)
+        }
+        self.frequencies_to_symbols = {
+            frequencies: symbol
+            for symbol, frequencies in self.symbols_to_frequencies.items()
         }
 
+
+    def set_parameter(self, parameter_name: str, parameter_value: [int, float]) -> None:
+        '''Устанавливает параметр в переданное значение'''
+        setattr(self, parameter_name, parameter_value)
+
     
-    def get_parameters(self):
+    def get_parameters(self) -> dict:
+        '''Возвращает словарь с параметрами DTMF'''
         return {
             'duration': {
                 'name': '⌛ Длительность сигнала',
@@ -55,7 +64,7 @@ class DTMF:
             'sampling_rate': {
                 'name': ' 🎶 Частота дискретизации',
                 'unit': 'Гц',
-                'value': self.sampling_rate,
+                'value': self.sample_rate,
                 'validator': lambda x: isinstance(x, (int, float)) and x > 0,
                 'converter': lambda x: int(x)
             },
@@ -64,100 +73,84 @@ class DTMF:
                 'value': self.A,
                 'validator': lambda x: isinstance(x, (int, float)) and x >= 0,
                 'converter': lambda x: float(x)
+            },
+            'decode_fragments_duration': {
+                'name': ' ⏰ Длительность фрагментов для распознавания',
+                'unit': 'мс',
+                'value': self.decode_fragments_duration,
+                'validator': lambda x: isinstance(x, (int, float)) and x > 0,
+                'converter': lambda x: int(x)
             }
         }
     
 
-    def set_parameter(self, parameter_name, parameter_value):
-        setattr(self, parameter_name, parameter_value)
+    def _play_dtmf_tone(self,
+        signal: Optional[np.ndarray] = None,
+        number: Optional[str] = None,
+        file_path: Optional[str] = None
+    ) -> None:
+        '''Проигрывает аудио сигнал DTMF'''
+        if signal is None:
+            if number is not None:
+                signal = self.generate_dtmf_tone(number)
+            elif file_path is not None:
+                with open(file_path, 'rb') as f:
+                    signal = np.frombuffer(f.read(), dtype=np.int16)
+            return
+                
+        sd.play(signal, self.sample_rate)
+        sd.wait()
 
 
-    def generate_dtmf_tone(self, phone_number):
-        t = np.linspace(0, self.duration, int(self.sampling_rate * self.duration), endpoint=False)
+    def _save_dtmf_to_wav(self,
+        filename: str = "dtmf",
+        signal: Optional[np.ndarray] = None,
+        number: Optional[str] = None
+    ) -> str:
+        '''Сохраняет аудио сигнал DTMF в формате wav'''
+        if signal is None:
+            if number is not None:
+                signal = self.generate_dtmf_tone(number)
+            return
+        
+        output_path = os.path.join("src\\audio", f"{filename}.wav")
+        wavfile.write(output_path, self.sample_rate, signal)
+
+        return output_path
+
+
+    def generate_dtmf_tone(self, phone_number: str) -> np.ndarray:
+        '''Генерирует аудио сигнал DTMF'''
+        t = np.linspace(0, self.duration, int(self.sample_rate * self.duration), endpoint=False)
 
         dtmf_signal = []
         for digit in phone_number:
-            f1, f2 = self.dtmf_frequencies[digit]
+            f1, f2 = self.symbols_to_frequencies[digit]
 
             signal_1 = self.A * np.sin(2 * np.pi * f1 * t)
             signal_2 = self.A * np.sin(2 * np.pi * f2 * t)
             dtmf_signal.extend(signal_1 + signal_2)
 
-            silence = np.zeros(int(self.silence_duration * self.sampling_rate))
+            silence = np.zeros(int(self.silence_duration * self.sample_rate))
             dtmf_signal.extend(silence)
 
-        dtmf_signal = np.int16(dtmf_signal / np.max(np.abs(dtmf_signal)) * 32767) # Normalize the signal to [-32767, 32767] and convert it to 16-bit integer
+        # Normalize the signal to [-32767, 32767] and convert it to 16-bit integer
+        dtmf_signal = np.int16(dtmf_signal / np.max(np.abs(dtmf_signal)) * 32767)
 
         return dtmf_signal
-    
 
-    def decode_dtmf(self, signal, ofset=10):
-        window = self.duration + self.silence_duration
 
-        # Initialize empty list to store the decoded keys and frequencies found
-        keys = []
-        found_freqs = []
-
-        # Iterate through the signal in window-sized chunks
-        for i in range(0, len(signal), int(self.sampling_rate * window)):
-            # Get the current chunk of the signal
-            cut_sig = signal[i:i+int(self.sampling_rate * window)]
-
-            # Take the Fast Fourier Transform (FFT) of the current chunk
-            fft_sig = np.fft.fft(cut_sig, self.sampling_rate)
-
-            # Take the absolute value of the FFT
-            fft_sig = np.abs(fft_sig)
-
-            # Set the first 500 elements of the FFT to 0 (removes DC component)
-            fft_sig[:500] = 0
-
-            # Only keep the first half of the FFT (removes negative frequencies)
-            fft_sig = fft_sig[:int(len(fft_sig)/2)]
-
-            # Set the lower bound to be 75% of the maximum value in the FFT
-            lower_bound = 0.75 * np.max(fft_sig)
-
-            # Initialize empty list to store the frequencies that pass the lower bound threshold
-            filtered_freqs = []
-
-            # Iterate through the FFT and store the indices of the frequencies that pass the lower bound threshold
-            for i, mag in enumerate(fft_sig):
-                if mag > lower_bound:
-                    filtered_freqs.append(i)
-
-            # Iterate through the DTMF frequencies and check if any of the filtered frequencies fall within the expected range
-            for char, frequency_pair in self.dtmf_frequencies.items():
-                high_freq_range = range(
-                    frequency_pair[0] - ofset, frequency_pair[0] + ofset + 1)
-                low_freq_range = range(
-                    frequency_pair[1] - ofset, frequency_pair[1] + ofset + 1)
-                if any(freq in high_freq_range for freq in filtered_freqs) and any(freq in low_freq_range for freq in filtered_freqs):
-                    # If a match is found, append the key and frequency pair to the lists
-                    keys.append(char)
-                    found_freqs.append(frequency_pair)
-        # Return the decoded keys and found frequencies
-        return keys, found_freqs
-    
-
-    def play_dtmf_tone(self, number):
+    def get_dtmf_signal_file(self, number: str, format: str = "wav") -> tuple:
+        '''Генерирует аудио сигнал DTMF и возвращает его в формате wav или mp3'''
         signal = self.generate_dtmf_tone(number)
-        sd.play(signal, self.sampling_rate)
-        sd.wait()
 
-
-    def save_dtmf_to_wav(self, number, filename):
-        signal = self.generate_dtmf_tone(number)
-        wavfile.write(filename, self.sampling_rate, signal)
-
-
-    def get_dtmf_signal_file(self, number, format="wav"):
-        signal = self.generate_dtmf_tone(number)
+        # file_path = self._save_dtmf_to_wav(number, signal) # Сохраняем сигнал в формате wav
+        # self._play_dtmf_tone(file_path=file_path) # Проигрываем сигнал
 
         if format == "wav":
             return signal, "wav"
         elif format == "mp3":
-            audio = AudioSegment(signal.tobytes(), frame_rate=self.sampling_rate, sample_width=2, channels=1)
+            audio = AudioSegment(signal.tobytes(), frame_rate=self.sample_rate, sample_width=2, channels=1)
             output = BytesIO()
             audio.export(output, format="mp3")
             return output.getvalue(), "mp3"
@@ -165,37 +158,82 @@ class DTMF:
             raise ValueError("Unsupported format")
         
 
-    def recognize_dtmf(self, audio_data, file_format=None):
+    def recognize_dtmf(self, audio_data, file_format=None) -> tuple:
+        '''Распознавание сигнала DTMF'''
         audio = AudioSegment.from_file(BytesIO(audio_data), format=file_format)
         samples = np.array(audio.get_array_of_samples())
+        sampling_rate = audio.frame_rate
 
-        keys, found_freqs = self.decode_dtmf(samples)
-        images = plot_dtmf_analysis(samples, found_freqs, self.sampling_rate)
-        return ''.join(keys), images
+        symbols, frequencies = self.decode_dtmf(samples, sampling_rate)
+        graphs_images = plot_dtmf_analysis_results(samples, sampling_rate, frequencies, symbols)
         
+        return ''.join(symbols), graphs_images
+    
+
+    def goertzel(self, samples, frequency, sample_rate):
+        '''Алгоритм Гёрцеля'''
+        sample_length = len(samples)
+
+        coeff = 2 * np.cos(2 * np.pi * frequency / sample_rate)
+        prev_1, prev_2 = 0, 0
+
+        for n in range(sample_length):
+            curr = samples[n] + coeff * prev_1 - prev_2
+            prev_2 = prev_1
+            prev_1 = curr
+        
+        return np.sqrt(curr**2 + prev_1**2)
 
 
-# if __name__ == '__main__':
-#     dtmf = DTMF(duration=0.5)
-#     phone_number = "12*#"  # Замените эту строку на нужный вам номер
-#     output_file = "dtmf_signal.wav"  # Название выходного файла
-#     # dtmf.play_dtmf_tone(phone_number)
-#     # dtmf.save_dtmf_to_wav(phone_number, output_file)
-#     # dtmf.get_dtmf_signal_file(phone_number, format="mp3")
+    def decode_dtmf(self, audio_data, sample_rate):
+        '''Распознавание сигнала DTMF'''
+        decoded_numbers = []     # Распознанные символы
+        decoded_frequencies = [] # Распознанные частоты
 
-#     wave_file = wave.open(output_file, 'r')
-#     num_samples = wave_file.getnframes()
-#     Fs = wave_file.getframerate()
-#     data = wave_file.readframes(num_samples)
+        audio_data = audio_data / 32767 # Нормализация синала
+        sample_length = int(sample_rate * self.decode_fragments_duration / 1000)
 
-#     sample_width = wave_file.getsampwidth()
+        for i in range(0, len(audio_data), sample_length):
+            chunk = audio_data[i:i + sample_length]
+            if len(chunk) < sample_length:
+                continue
+            
+            # Определение низких частот в сэмпле сигнала
+            dtmf_low_freq_scores = [0] * len(self.low_frequencies)
+            for freq_index, freq in enumerate(self.low_frequencies):
+                dtmf_low_freq_scores[freq_index] = self.goertzel(chunk, freq, sample_rate)
+            
+            # Определение высоких частот в сэмпле сигнала
+            dtmf_high_freq_scores = [0] * len(self.high_frequencies)
+            for freq_index, freq in enumerate(self.high_frequencies):
+                dtmf_high_freq_scores[freq_index] = self.goertzel(chunk, freq, sample_rate)
 
-#     if sample_width == 1:
-#         data = np.frombuffer(data, dtype=np.uint8)
-#     elif sample_width == 2:
-#         data = np.frombuffer(data, dtype=np.int16)
+            low_freq_index = dtmf_low_freq_scores.index(max(dtmf_low_freq_scores))
+            high_freq_index = dtmf_high_freq_scores.index(max(dtmf_high_freq_scores))
 
-#     print(len(data))
+            low_freq = self.low_frequencies[low_freq_index]
+            high_freq = self.high_frequencies[high_freq_index]
 
-#     wave_file.close()
-#     print(dtmf.decode_dtmf(data))
+            decoded_numbers.append(self.frequencies_to_symbols[(low_freq, high_freq)])
+
+            decoded_frequencies.append({
+                'symbol': self.frequencies_to_symbols[(low_freq, high_freq)],
+                'low_frequency': low_freq,
+                'high_frequency': high_freq,
+                'position_start': i,
+                'position_end': i + sample_length
+            })
+
+        return decoded_numbers, decoded_frequencies
+
+
+
+if __name__ == '__main__':
+    dtmf = DTMF(sampling_rate=8000)
+
+    phone_number = "1122"
+    signal = dtmf.generate_dtmf_tone(phone_number)
+    print(signal)
+
+    result = dtmf.decode_dtmf(signal)
+    print(result)

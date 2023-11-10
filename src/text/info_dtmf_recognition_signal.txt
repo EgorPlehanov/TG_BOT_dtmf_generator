@@ -1,0 +1,5 @@
+<b>Распознавание DTMF (Dual-Tone Multi-Frequency) сигнала</b>
+
+
+<b>Узнать больше про DTMF</b>:
+    - Генерация сигнала /info_dtmf_generate_signal
