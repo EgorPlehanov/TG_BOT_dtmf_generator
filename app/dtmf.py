@@ -197,7 +197,6 @@ class DTMF:
         audio_data = audio_data / 32767 # Нормализация синала
 
         chunks = self.get_chanks(audio_data, sample_rate)
-        print('chunks', chunks)
 
         for start, end in chunks:
             chunk = audio_data[start:end]
@@ -323,7 +322,5 @@ if __name__ == '__main__':
 
     phone_number = "1122"
     signal = dtmf.generate_dtmf_tone(phone_number)
-    print(signal)
-
     result = dtmf.decode_dtmf(signal)
     print(result)
