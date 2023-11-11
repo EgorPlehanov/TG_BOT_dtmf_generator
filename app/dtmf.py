@@ -4,7 +4,9 @@ from scipy.io import wavfile
 from pydub import AudioSegment
 from io import BytesIO
 import os
-from typing import Optional
+from typing import Optional, List
+from scipy.signal import butter, lfilter
+import matplotlib.pyplot as plt
 
 from plotter import plot_dtmf_analysis_results
 
@@ -20,7 +22,7 @@ class DTMF:
     ):
         self.duration = duration
         self.silence_duration = silence_duration
-        self.sample_rate = sampling_rate
+        self.sampling_rate = sampling_rate
         self.A = A
         self.decode_fragments_duration = decode_fragments_duration
         
@@ -64,7 +66,7 @@ class DTMF:
             'sampling_rate': {
                 'name': ' 🎶 Частота дискретизации',
                 'unit': 'Гц',
-                'value': self.sample_rate,
+                'value': self.sampling_rate,
                 'validator': lambda x: isinstance(x, (int, float)) and x > 0,
                 'converter': lambda x: int(x)
             },
@@ -98,7 +100,7 @@ class DTMF:
                     signal = np.frombuffer(f.read(), dtype=np.int16)
             return
                 
-        sd.play(signal, self.sample_rate)
+        sd.play(signal, self.sampling_rate)
         sd.wait()
 
 
@@ -114,14 +116,14 @@ class DTMF:
             return
         
         output_path = os.path.join("src\\audio", f"{filename}.wav")
-        wavfile.write(output_path, self.sample_rate, signal)
+        wavfile.write(output_path, self.sampling_rate, signal)
 
         return output_path
 
 
     def generate_dtmf_tone(self, phone_number: str) -> np.ndarray:
         '''Генерирует аудио сигнал DTMF'''
-        t = np.linspace(0, self.duration, int(self.sample_rate * self.duration), endpoint=False)
+        t = np.linspace(0, self.duration, int(self.sampling_rate * self.duration), endpoint=False)
 
         dtmf_signal = []
         for digit in phone_number:
@@ -131,7 +133,7 @@ class DTMF:
             signal_2 = self.A * np.sin(2 * np.pi * f2 * t)
             dtmf_signal.extend(signal_1 + signal_2)
 
-            silence = np.zeros(int(self.silence_duration * self.sample_rate))
+            silence = np.zeros(int(self.silence_duration * self.sampling_rate))
             dtmf_signal.extend(silence)
 
         # Normalize the signal to [-32767, 32767] and convert it to 16-bit integer
@@ -150,7 +152,7 @@ class DTMF:
         if format == "wav":
             return signal, "wav"
         elif format == "mp3":
-            audio = AudioSegment(signal.tobytes(), frame_rate=self.sample_rate, sample_width=2, channels=1)
+            audio = AudioSegment(signal.tobytes(), frame_rate=self.sampling_rate, sample_width=2, channels=1)
             output = BytesIO()
             audio.export(output, format="mp3")
             return output.getvalue(), "mp3"
@@ -161,11 +163,13 @@ class DTMF:
     def recognize_dtmf(self, audio_data, file_format=None) -> tuple:
         '''Распознавание сигнала DTMF'''
         audio = AudioSegment.from_file(BytesIO(audio_data), format=file_format)
-        samples = np.array(audio.get_array_of_samples())
+        signal = np.array(audio.get_array_of_samples())
         sampling_rate = audio.frame_rate
 
-        symbols, frequencies = self.decode_dtmf(samples, sampling_rate)
-        graphs_images = plot_dtmf_analysis_results(samples, sampling_rate, frequencies, symbols)
+        # filtered_signal = self.frequency_filter(signal, sampling_rate, self.frequencies)
+        
+        symbols, frequencies = self.decode_dtmf(signal, sampling_rate)
+        graphs_images = plot_dtmf_analysis_results(signal, sampling_rate, frequencies, symbols)
         
         return ''.join(symbols), graphs_images
     
@@ -191,12 +195,12 @@ class DTMF:
         decoded_frequencies = [] # Распознанные частоты
 
         audio_data = audio_data / 32767 # Нормализация синала
-        sample_length = int(sample_rate * self.decode_fragments_duration / 1000)
 
-        for i in range(0, len(audio_data), sample_length):
-            chunk = audio_data[i:i + sample_length]
-            if len(chunk) < sample_length:
-                continue
+        chunks = self.get_chanks(audio_data, sample_rate)
+        print('chunks', chunks)
+
+        for start, end in chunks:
+            chunk = audio_data[start:end]
             
             # Определение низких частот в сэмпле сигнала
             dtmf_low_freq_scores = [0] * len(self.low_frequencies)
@@ -220,11 +224,97 @@ class DTMF:
                 'symbol': self.frequencies_to_symbols[(low_freq, high_freq)],
                 'low_frequency': low_freq,
                 'high_frequency': high_freq,
-                'position_start': i,
-                'position_end': i + sample_length
+                'position_start': start,
+                'position_end': end
             })
 
         return decoded_numbers, decoded_frequencies
+    
+
+    def get_chanks(self, audio_data, sample_rate) -> List[tuple]:
+        '''Разделение сигнала на фрагменты'''
+        freq_filtered_signal = self.filter_signal_by_frequencies(audio_data, sample_rate, self.frequencies)
+        amp_threshold = self.calculate_amplitude_threshold(freq_filtered_signal)
+        amp_filtered_signal = self.amplitude_filter(freq_filtered_signal, amp_threshold)
+        window_size = int(sample_rate * 20 / 1000)
+        signal_energy = self.calculate_energy(amp_filtered_signal, window_size)
+        chunks = self.get_energy_intervals(signal_energy)
+        return chunks
+    
+
+    def calculate_offset(self, center_frequency: float | int) -> int:
+        '''Вычисляет смещение на основе центральной частоты'''
+        if center_frequency >= 300 and center_frequency < 1000:
+            return 20
+        elif center_frequency >= 1000 and center_frequency < 3000:
+            return 50
+        elif center_frequency >= 3000 and center_frequency < 10000:
+            return 200
+        return 0
+
+
+    def butter_bandpass_filter(
+        self,
+        signal: np.ndarray,
+        center_frequency: float,
+        sample_rate: float,
+        order: int = 4
+    ) -> np.ndarray:
+        '''Применяет полосовой фильтр Баттерворта к входному сигналу'''
+        nyquist = 0.5 * sample_rate
+        offset = self.calculate_offset(center_frequency)
+        low = (center_frequency - offset) / nyquist
+        high = (center_frequency + offset) / nyquist
+        b, a = butter(order, [low, high], btype='band')
+        y = lfilter(b, a, signal)
+        return y
+
+
+    def filter_signal_by_frequencies(
+        self,
+        signal: np.ndarray,
+        sample_rate: int,
+        frequencies: List[float],
+    ) -> np.ndarray:
+        """Фильтрует сигнал по заданным частотам с использованием фильтра Баттерворта-полосы"""
+        filtered_signal = np.sum([self.butter_bandpass_filter(signal, freq, sample_rate) for freq in frequencies], axis=0)
+        return filtered_signal
+
+
+    def calculate_amplitude_threshold(self, signal, multiplier=1.0):
+        mean_amplitude = np.mean(np.abs(signal))
+        std_amplitude = np.std(np.abs(signal))
+        threshold = mean_amplitude + multiplier * std_amplitude
+        return threshold
+
+
+    def amplitude_filter(self, signal, threshold):
+        filtered_signal = np.where(np.abs(signal) > threshold, signal, 0)
+        return filtered_signal
+    
+    def calculate_energy(self, signal, window_size):
+        squared_signal = np.square(signal)
+        energy = np.convolve(squared_signal, np.ones(window_size)/window_size, mode='valid')
+        return energy
+    
+
+    def get_energy_intervals(self, energy_values):
+        """Находит интервалы, где энергия сигнала больше 0."""
+        intervals = []
+        start_index = None
+
+        for i, energy in enumerate(energy_values):
+            if energy > 0:
+                if start_index is None:
+                    start_index = i
+            elif start_index is not None:
+                intervals.append((start_index, i - 1))
+                start_index = None
+
+        if start_index is not None:
+            intervals.append((start_index, len(energy_values) - 1))
+
+        return intervals
 
 
 

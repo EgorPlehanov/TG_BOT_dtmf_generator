@@ -15,6 +15,15 @@ def convert_plot_to_image(plt)-> io.BytesIO:
     return buffer.read()
 
 
+def get_plot(plot_functions, name):
+    '''Возвращает график с заданным названием'''
+    try:
+        return plot_functions[name]()
+    except Exception as e:
+        print(f"Error generating plot for {name}: {e}")
+        return None
+
+
 def plot_dtmf_analysis_results(
     audio_data,             # Исходный сигнал
     smpling_rate,           # Частота дискретизации
@@ -28,6 +37,10 @@ def plot_dtmf_analysis_results(
             get_plot_time_domain_signal,
             audio_data, smpling_rate, graphic_size
         ),
+        'dtmf_recognition_timeline': partial(
+            get_plot_dtmf_recognition_timeline,
+            audio_data, found_freqs, smpling_rate, found_symbols, graphic_size
+        ),
         'fft_spectrum': partial(
             get_plot_fft_spectrum,
             audio_data, smpling_rate, 0, 2000, graphic_size
@@ -36,16 +49,12 @@ def plot_dtmf_analysis_results(
             get_plot_spectrogram,
             audio_data, smpling_rate, graphic_size
         ),
-        'dtmf_recognition_timeline': partial(
-            get_plot_dtmf_recognition_timeline,
-            audio_data, found_freqs, smpling_rate, found_symbols, graphic_size
-        ),
     }
     if plot_names is None:
         plot_names = plot_functions.keys()
 
     plots = [
-        plot_functions.get(name, lambda: None)()
+        get_plot(plot_functions, name)
         for name in plot_names
     ]
     images = [
@@ -111,7 +120,7 @@ def get_plot_dtmf_recognition_timeline(audio_data, detected_frequencies, sample_
 
         plt.plot(time_points, signal, label=f'{symbol}')
 
-    plt.title(f"Распознанные DTMF сигналы алгоритмом Гёрцеля во времени: {', '.join(detected_symbols)}")
+    plt.title(f"Распознанные DTMF сигналы алгоритмом Гёрцеля во времени: {''.join(detected_symbols)}")
     plt.xlabel('Время (секунды)')
     plt.ylabel('Амплитуда')
     plt.legend()
