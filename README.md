@@ -1,4 +1,6 @@
 # DTMF Telegram Bot
+Telegram bot, DTMF signals, Dual-Tone Multi-Frequency, Generation, Recognition, Playback, Audio formats (wav, mp3, ogg), Graphical analysis
+
 Приветствую! Это Telegram-бот для генерации, распознавания и воспроизведения DTMF (Dual-Tone Multi-Frequency) сигналов. DTMF - это система многочастотного набора, используемая для передачи цифровых команд и сигналов через телефонные линии. Этот бот предоставляет удобный способ взаимодействия с DTMF сигналами через Telegram.
 
 ## Функциональность
