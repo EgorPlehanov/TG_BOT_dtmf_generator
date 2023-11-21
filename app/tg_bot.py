@@ -305,4 +305,4 @@ bot.infinity_polling()
 
 
 # venv_dtmf\Scripts\activate
-# python app\dtmf_tg_bot.py
+# python app\tg_bot.py
